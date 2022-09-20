@@ -813,7 +813,7 @@ int main(int argc, char **argv)
 		/* Submit redraw information */
 		wl_list_for_each_safe(output, tmp, &state.outputs, link)
 		{
-			if (!output->surface || output->frame_callback) {
+			if (!output->egl_window || output->frame_callback) {
 				continue;
 			}
 
@@ -836,7 +836,7 @@ int main(int argc, char **argv)
 		/* Batch swap buffer calls after all redraw computations */
 		wl_list_for_each_safe(output, tmp, &state.outputs, link)
 		{
-			if (!output->surface || output->frame_callback) {
+			if (!output->egl_window || output->frame_callback) {
 				continue;
 			}
 
