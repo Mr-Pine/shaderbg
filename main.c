@@ -34,7 +34,8 @@
 #include <wayland-egl.h>
 
 static char usage[] = {
-		"shaderbg [-h|--fps F|--layer l] output-name shader.frag\n"};
+		"shaderbg [-h|--fps F|--layer l] output-name shader.frag\n"
+		"The provided fragment shaders should follow the Shadertoy API"};
 
 static const struct option options[] = {{"help", no_argument, NULL, 'h'},
 		{"fps", required_argument, NULL, 'f'},
@@ -61,6 +62,9 @@ PFNGLBINDBUFFERPROC glBindBuffer;
 PFNGLBUFFERDATAPROC glBufferData;
 PFNGLUNIFORM1FPROC glUniform1f;
 PFNGLUNIFORM2FPROC glUniform2f;
+PFNGLUNIFORM3FPROC glUniform3f;
+PFNGLUNIFORM4FPROC glUniform4f;
+PFNGLUNIFORM1IPROC glUniform1i;
 PFNGLDELETESHADERPROC glDeleteShader;
 PFNGLENABLEVERTEXATTRIBARRAYPROC glEnableVertexAttribArray;
 
@@ -88,6 +92,9 @@ void load_gl_funcs()
 	load_gl_func(PFNGLBUFFERDATAPROC, glBufferData);
 	load_gl_func(PFNGLUNIFORM1FPROC, glUniform1f);
 	load_gl_func(PFNGLUNIFORM2FPROC, glUniform2f);
+	load_gl_func(PFNGLUNIFORM3FPROC, glUniform3f);
+	load_gl_func(PFNGLUNIFORM4FPROC, glUniform4f);
+	load_gl_func(PFNGLUNIFORM1IPROC, glUniform1i);
 	load_gl_func(PFNGLDELETESHADERPROC, glDeleteShader);
 	load_gl_func(PFNGLENABLEVERTEXATTRIBARRAYPROC,
 			glEnableVertexAttribArray);
@@ -109,11 +116,17 @@ struct state {
 	struct zwlr_layer_shell_v1 *layer_shell;
 
 	float current_time;
+	float delta_time;
+	uint64_t frame_no;
 
 	GLuint shader_prog;
 	GLuint attr_pos;
-	GLuint uniform_time;
-	GLuint uniform_resolution;
+	GLuint unif_iResolution;
+	GLuint unif_iTime;
+	GLuint unif_iTimeDelta;
+	GLuint unif_iFrame;
+	GLuint unif_iMouse;
+
 	GLuint vertex_buffer;
 	GLuint vertex_array;
 
@@ -220,11 +233,14 @@ static void redraw(struct output *output)
 	glVertexAttribPointer(
 			state->attr_pos, 2, GL_FLOAT, GL_FALSE, 0, (void *)0);
 
-	glUniform1f(state->uniform_time, state->current_time);
+	glUniform1f(state->unif_iTime, state->current_time);
+	glUniform1f(state->unif_iTimeDelta, state->delta_time);
 	GLfloat w = output->width, h = output->height;
-	glUniform2f(state->uniform_resolution, w, h);
+	glUniform3f(state->unif_iResolution, w, h, 0.);
+	glUniform1i(state->unif_iFrame, state->frame_no);
+	glUniform4f(state->unif_iMouse, 0., 0., 0., 0.);
 
-	glDrawArrays(GL_TRIANGLE_FAN, 0, 4);
+	glDrawArrays(GL_TRIANGLE_FAN, 0, 3);
 
 	if (!check_gl_errors("drawing")) {
 		exit(EXIT_FAILURE);
@@ -427,10 +443,21 @@ static float timespec_diff(struct timespec to, struct timespec from)
 	       1.f * (to.tv_sec - from.tv_sec);
 }
 
-static const char *vertex_shader_text =
+static const char vertex_shader_text[] =
 		"attribute vec2 pos;\n"
 		"void main() {\n"
 		"  gl_Position = vec4(pos.x, pos.y, 0, 1);\n"
+		"}\n";
+
+static const char frag_prologue[] = "uniform vec3 iResolution;\n"
+				    "uniform float iTime;\n"
+				    "uniform float iTimeDelta;\n"
+				    "uniform float iFrame;\n"
+				    "uniform vec4 iMouse;\n";
+
+static const char frag_coda[] =
+		"void main() {\n"
+		"    mainImage(gl_FragColor, gl_FragCoord.xy);\n"
 		"}\n";
 
 int main(int argc, char **argv)
@@ -449,6 +476,8 @@ int main(int argc, char **argv)
 		switch (opt) {
 		case 'h':
 			fprintf(stdout, "%s", usage);
+			fprintf(stdout, "\nPrefix:\n\n%s", frag_prologue);
+			fprintf(stdout, "\nSuffix:\n\n%s", frag_coda);
 			return EXIT_SUCCESS;
 		case 'f': {
 			char *endptr = NULL;
@@ -543,8 +572,9 @@ int main(int argc, char **argv)
 			/* use OpenGL */
 			EGL_RENDERABLE_TYPE, EGL_OPENGL_BIT,
 			/* pick floating point */
-			EGL_COLOR_COMPONENT_TYPE_EXT,
-			EGL_COLOR_COMPONENT_TYPE_FLOAT_EXT, EGL_NONE};
+			//			EGL_COLOR_COMPONENT_TYPE_EXT,
+			//			EGL_COLOR_COMPONENT_TYPE_FLOAT_EXT,
+			EGL_NONE};
 
 	int nret = 0;
 	if (!eglChooseConfig(state.egl_display, config_attrib_list, configs,
@@ -615,7 +645,17 @@ int main(int argc, char **argv)
 	GLint glstatus;
 
 	GLuint frag_shader = glCreateShader(GL_FRAGMENT_SHADER);
-	glShaderSource(frag_shader, 1, (const char **)&frag_text, &frag_len);
+	const char *frag_parts[] = {
+			frag_prologue,
+			frag_text,
+			frag_coda,
+	};
+	int frag_lengths[] = {
+			sizeof(frag_prologue) - 1,
+			frag_len,
+			sizeof(frag_coda) - 1,
+	};
+	glShaderSource(frag_shader, 3, frag_parts, frag_lengths);
 	free(frag_text);
 	glCompileShader(frag_shader);
 
@@ -630,8 +670,9 @@ int main(int argc, char **argv)
 	}
 
 	GLuint vertex_shader = glCreateShader(GL_VERTEX_SHADER);
-	glShaderSource(vertex_shader, 1, (const char **)&vertex_shader_text,
-			NULL);
+	const char *vtext = vertex_shader_text;
+
+	glShaderSource(vertex_shader, 1, &vtext, NULL);
 	glCompileShader(vertex_shader);
 
 	glGetShaderiv(vertex_shader, GL_COMPILE_STATUS, &glstatus);
@@ -662,9 +703,13 @@ int main(int argc, char **argv)
 	glDeleteShader(frag_shader);
 	glDeleteShader(vertex_shader);
 
-	state.uniform_time = glGetUniformLocation(state.shader_prog, "time");
-	state.uniform_resolution =
-			glGetUniformLocation(state.shader_prog, "resolution");
+	state.unif_iResolution =
+			glGetUniformLocation(state.shader_prog, "iResolution");
+	state.unif_iTime = glGetUniformLocation(state.shader_prog, "iTime");
+	state.unif_iTimeDelta =
+			glGetUniformLocation(state.shader_prog, "iTimeDelta");
+	state.unif_iFrame = glGetUniformLocation(state.shader_prog, "iFrame");
+	state.unif_iMouse = glGetUniformLocation(state.shader_prog, "iMouse");
 
 	glGenVertexArrays(1, &state.vertex_array);
 	glBindVertexArray(state.vertex_array);
@@ -675,21 +720,20 @@ int main(int argc, char **argv)
 
 	glGenBuffers(1, &state.vertex_buffer);
 	glBindBuffer(GL_ARRAY_BUFFER, state.vertex_buffer);
-	GLfloat vertex_data[4][2] = {{
+	/* Use a single triangle for the entire scene; this is _very_ slightly
+	 * more efficient than using two triangles due to only drawing things at
+	 * the interface once */
+	GLfloat vertex_data[3][2] = {{
 						     -1.0f,
-						     -1.0f,
+						     -3.0f,
 				     },
 			{
 					-1.0f,
 					1.0f,
 			},
 			{
+					3.0f,
 					1.0f,
-					1.0f,
-			},
-			{
-					1.0f,
-					-1.0f,
 			}};
 	glBufferData(GL_ARRAY_BUFFER, sizeof(vertex_data), vertex_data,
 			GL_STATIC_DRAW);
@@ -707,6 +751,7 @@ int main(int argc, char **argv)
 	clock_gettime(CLOCK_MONOTONIC, &start_time);
 
 	struct timespec next_draw_time = start_time;
+	struct timespec last_frame_time = start_time;
 
 	int64_t period_ns = 1e9f / state.fps;
 	struct timespec period = {
@@ -809,6 +854,9 @@ int main(int argc, char **argv)
 		}
 
 		state.current_time = timespec_diff(cur_time, start_time);
+		state.delta_time = timespec_diff(cur_time, last_frame_time);
+		last_frame_time = cur_time;
+		state.frame_no++;
 
 		/* Submit redraw information */
 		wl_list_for_each_safe(output, tmp, &state.outputs, link)
