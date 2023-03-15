@@ -12,13 +12,31 @@ shaderbg [-h|--fps F|--layer l] output-name shader.frag
 ```
 The parameter `layer` should be one of 'background', 'bottom', 'top', 'overlay'.
 
-shaderbg provides two uniforms to the fragment shader: `float time`, measured in
-seconds since the program started; and `vec2 resolution`, the current frame size
-in pixels.
-
 `output-name` should be either the name of an output (on Sway, these can be determined using `swaymsg -t get_outputs`) or the value `*` to match any output. To prevent the shell from expanding the `*` symbol, write `shaderbg '*' shader.frag`.
 
+
+`shaderbg` runs shaders that conform roughly to the Shadertoy interface[0]. That is,
+shaders should implement
+```
+void mainImage( out vec4 fragColor, in vec2 fragCoord )
+{
+}
+```
+
+Currently supported uniforms are
+
+* `float iTime` measured in
+seconds since the program started
+* `vec3 iResolution`, whose first two coordinates give the current frame size
+in pixels.
+* `float iTimeDelta`
+* `float iFrame`
+* `vec4 iMouse`
+
+
 A few example shaders are provided in the demo/ folder.
+
+[0] https://web.archive.org/web/20230301165944/https://www.shadertoy.com/howto
 
 # Installation
 
