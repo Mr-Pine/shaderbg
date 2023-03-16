@@ -449,10 +449,12 @@ static const char vertex_shader_text[] =
 		"  gl_Position = vec4(pos.x, pos.y, 0, 1);\n"
 		"}\n";
 
-static const char frag_prologue[] = "uniform vec3 iResolution;\n"
-				    "uniform float iTime;\n"
-				    "uniform float iTimeDelta;\n"
-				    "uniform float iFrame;\n"
+/* Only one newline -- these can mess up the line count in the composed shader
+and make debugging harder */
+static const char frag_prologue[] = "uniform vec3 iResolution; "
+				    "uniform float iTime; "
+				    "uniform float iTimeDelta; "
+				    "uniform float iFrame; "
 				    "uniform vec4 iMouse;\n";
 
 static const char frag_coda[] =
