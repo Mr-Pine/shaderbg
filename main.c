@@ -34,10 +34,11 @@
 #include <wayland-egl.h>
 
 static char usage[] = {
-		"shaderbg [-h|--fps F|--layer l] output-name shader.frag\n"
-		"The provided fragment shaders should follow the Shadertoy API"};
+		"shaderbg [-h|--fps F|--layer l|--speed S] output-name shader.frag\n"
+		"The provided fragment shaders should follow the Shadertoy API\n"};
 
 static const struct option options[] = {{"help", no_argument, NULL, 'h'},
+		{"speed", required_argument, NULL, 's'},
 		{"fps", required_argument, NULL, 'f'},
 		{"layer", required_argument, NULL, 'l'}, {0, 0, NULL, 0}};
 
@@ -102,7 +103,8 @@ void load_gl_funcs()
 #undef load_gl_func
 
 struct state {
-	float fps;
+	float fps;   // how often to update output
+	float speed; // ratio of real time to shader time
 	enum zwlr_layer_shell_v1_layer layer;
 	char *output_name;
 	char *shader_path;
@@ -466,6 +468,7 @@ int main(int argc, char **argv)
 {
 	struct state state = {0};
 	state.fps = INFINITY;
+	state.speed = 1.f;
 	state.layer = ZWLR_LAYER_SHELL_V1_LAYER_BACKGROUND;
 	wl_list_init(&state.outputs);
 
@@ -486,6 +489,14 @@ int main(int argc, char **argv)
 			state.fps = strtof(optarg, &endptr);
 			if (*endptr != '\0' || !(state.fps > 0)) {
 				fprintf(stdout, "Invalid fps '%s'\n", optarg);
+				return EXIT_FAILURE;
+			}
+		} break;
+		case 's': {
+			char *endptr = NULL;
+			state.speed = strtof(optarg, &endptr);
+			if (*endptr != '\0' || !(state.speed > 0)) {
+				fprintf(stdout, "Invalid speed '%s'\n", optarg);
 				return EXIT_FAILURE;
 			}
 		} break;
@@ -855,8 +866,10 @@ int main(int argc, char **argv)
 			next_draw_time.tv_sec += 1;
 		}
 
-		state.current_time = timespec_diff(cur_time, start_time);
-		state.delta_time = timespec_diff(cur_time, last_frame_time);
+		state.current_time = timespec_diff(cur_time, start_time) *
+				     state.speed;
+		state.delta_time = timespec_diff(cur_time, last_frame_time) *
+				   state.speed;
 		last_frame_time = cur_time;
 		state.frame_no++;
 
