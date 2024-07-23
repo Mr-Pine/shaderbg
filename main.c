@@ -23,6 +23,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <getopt.h>
+#include <bits/getopt_core.h>
 #include <poll.h>
 #include <stdbool.h>
 #include <stdint.h>
@@ -34,13 +35,15 @@
 #include <wayland-egl.h>
 
 static char usage[] = {
-		"shaderbg [-h|--fps F|--layer l|--speed S] output-name shader.frag\n"
+		"shaderbg [-h|--fps F|--layer l|--speed S|--shaderA A] output-name shader.frag\n"
 		"The provided fragment shaders should follow the Shadertoy API\n"};
 
 static const struct option options[] = {{"help", no_argument, NULL, 'h'},
 		{"speed", required_argument, NULL, 's'},
 		{"fps", required_argument, NULL, 'f'},
-		{"layer", required_argument, NULL, 'l'}, {0, 0, NULL, 0}};
+		{"layer", required_argument, NULL, 'l'},
+		{"shaderA", required_argument, NULL, 'A'},
+		{0, 0, NULL, 0}};
 
 PFNGLCREATESHADERPROC glCreateShader;
 PFNGLCOMPILESHADERPROC glCompileShader;
@@ -61,6 +64,11 @@ PFNGLVERTEXATTRIBPOINTERPROC glVertexAttribPointer;
 PFNGLGENBUFFERSPROC glGenBuffers;
 PFNGLBINDBUFFERPROC glBindBuffer;
 PFNGLBUFFERDATAPROC glBufferData;
+PFNGLGENFRAMEBUFFERSPROC glGenFramebuffers;
+PFNGLBINDFRAMEBUFFERPROC glBindFramebuffer;
+PFNGLFRAMEBUFFERTEXTURE2DPROC glFramebufferTexture2D;
+PFNGLCHECKFRAMEBUFFERSTATUSEXTPROC glCheckFramebufferStatus;
+PFNGLDELETEFRAMEBUFFERSPROC glDeleteFramebuffers;
 PFNGLUNIFORM1FPROC glUniform1f;
 PFNGLUNIFORM2FPROC glUniform2f;
 PFNGLUNIFORM3FPROC glUniform3f;
@@ -91,6 +99,11 @@ void load_gl_funcs()
 	load_gl_func(PFNGLGENBUFFERSPROC, glGenBuffers);
 	load_gl_func(PFNGLBINDBUFFERPROC, glBindBuffer);
 	load_gl_func(PFNGLBUFFERDATAPROC, glBufferData);
+	load_gl_func(PFNGLGENFRAMEBUFFERSPROC, glGenFramebuffers);
+	load_gl_func(PFNGLBINDFRAMEBUFFERPROC, glBindFramebuffer);
+	load_gl_func(PFNGLFRAMEBUFFERTEXTURE2DPROC, glFramebufferTexture2D);
+	load_gl_func(PFNGLCHECKFRAMEBUFFERSTATUSEXTPROC, glCheckFramebufferStatus);
+	load_gl_func(PFNGLDELETEFRAMEBUFFERSPROC, glDeleteFramebuffers);
 	load_gl_func(PFNGLUNIFORM1FPROC, glUniform1f);
 	load_gl_func(PFNGLUNIFORM2FPROC, glUniform2f);
 	load_gl_func(PFNGLUNIFORM3FPROC, glUniform3f);
@@ -102,12 +115,28 @@ void load_gl_funcs()
 }
 #undef load_gl_func
 
+struct shader {
+	GLuint shader_prog;
+	GLuint attr_pos;
+	GLuint unif_iResolution;
+	GLuint unif_iTime;
+	GLuint unif_iTimeDelta;
+	GLuint unif_iFrame;
+	GLuint unif_iMouse;
+	struct {
+		GLint A;
+	} buffers;
+};
+
 struct state {
 	float fps;   // how often to update output
 	float speed; // ratio of real time to shader time
 	enum zwlr_layer_shell_v1_layer layer;
 	char *output_name;
 	char *shader_path;
+	struct {
+		char *A;
+	} texture_shader_paths;
 
 	struct wl_display *display;
 	struct wl_registry *registry;
@@ -121,13 +150,10 @@ struct state {
 	float delta_time;
 	uint64_t frame_no;
 
-	GLuint shader_prog;
-	GLuint attr_pos;
-	GLuint unif_iResolution;
-	GLuint unif_iTime;
-	GLuint unif_iTimeDelta;
-	GLuint unif_iFrame;
-	GLuint unif_iMouse;
+	struct shader main_shader;
+	struct {
+		struct shader A;
+	} texture_shaders;
 
 	GLuint vertex_buffer;
 	GLuint vertex_array;
@@ -156,6 +182,13 @@ struct output {
 	bool needs_ack;
 	bool needs_resize;
 	uint32_t last_serial;
+
+	struct {
+		GLuint A;
+	} textures;
+	struct {
+		GLuint A;
+	} framebuffers;
 };
 
 static bool check_gl_errors(const char *where)
@@ -214,8 +247,7 @@ static struct wl_callback_listener frame_callback_listener = {
 		.done = frame_done,
 };
 
-static void redraw(struct output *output)
-{
+static void draw_frame(struct output *output) {
 	struct state *state = output->state;
 	if (!eglMakeCurrent(state->egl_display, output->egl_surface,
 			    output->egl_surface, state->egl_context)) {
@@ -229,24 +261,87 @@ static void redraw(struct output *output)
 
 	glBindVertexArray(state->vertex_array);
 	glBindBuffer(GL_ARRAY_BUFFER, state->vertex_buffer);
-	glUseProgram(state->shader_prog);
+	struct shader shader = state->main_shader;
+	glUseProgram(shader.shader_prog);
 
 	// todo: why do we need to call this here?
 	glVertexAttribPointer(
-			state->attr_pos, 2, GL_FLOAT, GL_FALSE, 0, (void *)0);
+			shader.attr_pos, 2, GL_FLOAT, GL_FALSE, 0, (void *)0);
 
-	glUniform1f(state->unif_iTime, state->current_time);
-	glUniform1f(state->unif_iTimeDelta, state->delta_time);
+	glActiveTexture(GL_TEXTURE0);
+	glBindTexture(GL_TEXTURE_2D, output->textures.A);
+	GLuint iBufferALocation = shader.buffers.A;
+
+	if (!check_gl_errors("before uniform")) {
+		exit(EXIT_FAILURE);
+	}
+	fprintf(stderr, "Hi %x, %x, %x\n", shader.buffers.A, shader.unif_iTime, shader.unif_iResolution);
+	glUniform1i(iBufferALocation, 0);
+
+	if (!check_gl_errors("uniform")) {
+		exit(EXIT_FAILURE);
+	}
+	glBindTexture(GL_TEXTURE_2D, 0);
+
+
+
+	glUniform1f(shader.unif_iTime, state->current_time);
+	glUniform1f(shader.unif_iTimeDelta, state->delta_time);
 	GLfloat w = output->width, h = output->height;
-	glUniform3f(state->unif_iResolution, w, h, 0.);
-	glUniform1i(state->unif_iFrame, state->frame_no);
-	glUniform4f(state->unif_iMouse, 0., 0., 0., 0.);
+	glUniform3f(shader.unif_iResolution, w, h, 0.);
+	glUniform1i(shader.unif_iFrame, state->frame_no);
+	glUniform4f(shader.unif_iMouse, 0., 0., 0., 0.);
 
 	glDrawArrays(GL_TRIANGLE_FAN, 0, 3);
 
 	if (!check_gl_errors("drawing")) {
 		exit(EXIT_FAILURE);
 	}
+}
+
+static void redraw_texture(struct output *output, GLuint framebuffer, struct shader *shader) {
+	struct state *state = output->state;
+	if (!eglMakeCurrent(state->egl_display, output->egl_surface,
+			    output->egl_surface, state->egl_context)) {
+		fprintf(stderr, "Failed to make current\n");
+		exit(EXIT_FAILURE);
+	}
+
+	glBindFramebuffer(GL_FRAMEBUFFER, framebuffer);
+
+	glViewport(0, 0, output->width, output->height);
+	glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+
+	glUseProgram(shader->shader_prog);
+
+	// todo: why do we need to call this here?
+	glVertexAttribPointer(
+			shader->attr_pos, 2, GL_FLOAT, GL_FALSE, 0, (void *)0);
+
+	glUniform1f(shader->unif_iTime, state->current_time);
+	glUniform1f(shader->unif_iTimeDelta, state->delta_time);
+	GLfloat w = output->width, h = output->height;
+	glUniform3f(shader->unif_iResolution, w, h, 0.);
+	glUniform1i(shader->unif_iFrame, state->frame_no);
+	glUniform4f(shader->unif_iMouse, 0., 0., 0., 0.);
+
+	glDrawArrays(GL_TRIANGLE_FAN, 0, 3);
+
+    if (!check_gl_errors("drawing to texture")) {
+        exit(EXIT_FAILURE);
+    }
+
+	glBindFramebuffer(GL_FRAMEBUFFER, 0);
+}
+
+static void redraw_textures(struct output *output) {
+	if(output->state->texture_shaders.A.shader_prog) redraw_texture(output, output->framebuffers.A, &output->state->texture_shaders.A);
+}
+
+static void redraw(struct output *output)
+{
+	redraw_textures(output);
+	draw_frame(output);
 }
 
 static void layer_surface_configure(void *data,
@@ -451,6 +546,11 @@ static const char vertex_shader_text[] =
 		"  gl_Position = vec4(pos.x, pos.y, 0, 1);\n"
 		"}\n";
 
+static const char frag_prologue_version[] = "#version 330\n";
+static const char frag_prologue_buffer_A[] = "uniform sampler2D iBufferA; ";
+static const char frag_prologue_buffer_B[] = "uniform sampler2D iBufferB; ";
+static const char frag_prologue_buffer_C[] = "uniform sampler2D iBufferC; ";
+static const char frag_prologue_buffer_D[] = "uniform sampler2D iBufferD; ";
 /* Only one newline -- these can mess up the line count in the composed shader
 and make debugging harder */
 static const char frag_prologue[] = "uniform vec3 iResolution; "
@@ -464,6 +564,112 @@ static const char frag_coda[] =
 		"    mainImage(gl_FragColor, gl_FragCoord.xy);\n"
 		"}\n";
 
+static GLuint create_frag_shader(char *path, int A, int B, int C, int D) {
+	if (!path) return 0;
+	FILE *frag_file = fopen(path, "rb");
+	if (!frag_file) {
+		fprintf(stderr, "Failed to read shader file at '%s'\n", path);
+		return EXIT_FAILURE;
+	}
+	fseek(frag_file, 0, SEEK_END);
+	GLint frag_len = (GLint)ftell(frag_file);
+	fseek(frag_file, 0, SEEK_SET);
+	char *frag_text = (char *)malloc((size_t)frag_len);
+	if (!frag_text) {
+		fprintf(stderr, "Failed to allocate space to read shader file\n");
+		return EXIT_FAILURE;
+	}
+	fread(frag_text, (size_t)frag_len, 1, frag_file);
+	fclose(frag_file);
+
+	GLint glstatus;
+
+	GLuint frag_shader = glCreateShader(GL_FRAGMENT_SHADER);
+	const char *frag_parts[] = {
+			frag_prologue_version,
+			A ? frag_prologue_buffer_A : "",
+			B ? frag_prologue_buffer_B : "",
+			C ? frag_prologue_buffer_C : "",
+			D ? frag_prologue_buffer_D : "",
+			frag_prologue,
+			frag_text,
+			frag_coda,
+	};
+	int frag_lengths[] = {
+			sizeof(frag_prologue_version) - 1,
+			(sizeof(frag_prologue_buffer_A) - 1) * A,
+			(sizeof(frag_prologue_buffer_B) - 1) * B,
+			(sizeof(frag_prologue_buffer_C) - 1) * C,
+			(sizeof(frag_prologue_buffer_D) - 1) * D,
+			sizeof(frag_prologue) - 1,
+			frag_len,
+			sizeof(frag_coda) - 1,
+	};
+	glShaderSource(frag_shader, sizeof(frag_parts) / sizeof(frag_parts[0]), frag_parts, frag_lengths);
+	free(frag_text);
+	glCompileShader(frag_shader);
+
+	glGetShaderiv(frag_shader, GL_COMPILE_STATUS, &glstatus);
+	if (!glstatus) {
+		char log[1024] = {0};
+		GLsizei len;
+		glGetShaderInfoLog(frag_shader, 1024, &len, log);
+		fprintf(stderr, "Failed to compile fragment shader: %.*s\n",
+				len, log);
+		return EXIT_FAILURE;
+	}
+
+	return frag_shader;
+}
+
+static void create_shader(GLuint frag_shader, GLuint vertex_shader, struct shader *shader) {
+	shader->shader_prog = glCreateProgram();
+	glAttachShader(shader->shader_prog, frag_shader);
+	glAttachShader(shader->shader_prog, vertex_shader);
+	shader->attr_pos = 0;
+	glBindAttribLocation(shader->shader_prog, shader->attr_pos, "pos");
+	glLinkProgram(shader->shader_prog);
+	GLint glstatus;
+	glGetProgramiv(shader->shader_prog, GL_LINK_STATUS, &glstatus);
+	if (!glstatus) {
+		char log[1024] = {0};
+		GLsizei len;
+		glGetProgramInfoLog(shader->shader_prog, 1000, &len, log);
+		fprintf(stderr, "Failed to link shader:\n%.*s\n", len, log);
+		exit(1);
+	}
+
+	shader->unif_iResolution =
+			glGetUniformLocation(shader->shader_prog, "iResolution");
+	shader->unif_iTime = glGetUniformLocation(shader->shader_prog, "iTime");
+	shader->unif_iTimeDelta =
+			glGetUniformLocation(shader->shader_prog, "iTimeDelta");
+	shader->unif_iFrame = glGetUniformLocation(shader->shader_prog, "iFrame");
+	shader->unif_iMouse = glGetUniformLocation(shader->shader_prog, "iMouse");
+	shader->buffers.A = glGetUniformLocation(shader->shader_prog, "iBufferA");
+	glVertexAttribPointer(
+			shader->attr_pos, 2, GL_FLOAT, GL_FALSE, 0, (void *)0);
+}
+
+static void create_framebuffer(struct output *output, GLuint texture, GLuint *framebuffer) {
+	glGenFramebuffers(1, framebuffer);
+	glBindFramebuffer(GL_FRAMEBUFFER, *framebuffer);
+
+	glBindTexture(GL_TEXTURE_2D, texture);
+
+	glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, output->width, output->height, 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
+
+	glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, texture, 0);
+
+	if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE) {
+		fprintf(stderr, "Framebuffer not complete");
+		exit(EXIT_FAILURE);
+	}
+
+	glBindFramebuffer(GL_FRAMEBUFFER, 0);
+	glBindTexture(GL_TEXTURE_2D, 0);
+}
+
 int main(int argc, char **argv)
 {
 	struct state state = {0};
@@ -473,7 +679,7 @@ int main(int argc, char **argv)
 	wl_list_init(&state.outputs);
 
 	while (true) {
-		int opt = getopt_long(argc, argv, "hf:l:", options, NULL);
+		int opt = getopt_long(argc, argv, "hf:l:A:", options, NULL);
 		if (opt == -1) {
 			break;
 		}
@@ -516,6 +722,11 @@ int main(int argc, char **argv)
 			}
 
 			break;
+
+		case 'A': {
+			state.texture_shader_paths.A = optarg;
+			} break;
+
 		default:
 			fprintf(stdout, "%s", usage);
 			return EXIT_FAILURE;
@@ -638,50 +849,10 @@ int main(int argc, char **argv)
 		return EXIT_FAILURE;
 	}
 
-	FILE *frag_file = fopen(state.shader_path, "rb");
-	if (!frag_file) {
-		fprintf(stderr, "Failed to read shader file at '%s'\n",
-				state.shader_path);
-		return EXIT_FAILURE;
-	}
-	fseek(frag_file, 0, SEEK_END);
-	GLint frag_len = (GLint)ftell(frag_file);
-	fseek(frag_file, 0, SEEK_SET);
-	char *frag_text = (char *)malloc((size_t)frag_len);
-	if (!frag_text) {
-		fprintf(stderr, "Failed to allocate space to read shader file\n");
-		return EXIT_FAILURE;
-	}
-	fread(frag_text, (size_t)frag_len, 1, frag_file);
-	fclose(frag_file);
+	GLuint texture_shader_A = create_frag_shader(state.texture_shader_paths.A, 0,0,0,0);
+	GLuint frag_shader = create_frag_shader(state.shader_path, !!texture_shader_A, 0,0,0);
 
 	GLint glstatus;
-
-	GLuint frag_shader = glCreateShader(GL_FRAGMENT_SHADER);
-	const char *frag_parts[] = {
-			frag_prologue,
-			frag_text,
-			frag_coda,
-	};
-	int frag_lengths[] = {
-			sizeof(frag_prologue) - 1,
-			frag_len,
-			sizeof(frag_coda) - 1,
-	};
-	glShaderSource(frag_shader, 3, frag_parts, frag_lengths);
-	free(frag_text);
-	glCompileShader(frag_shader);
-
-	glGetShaderiv(frag_shader, GL_COMPILE_STATUS, &glstatus);
-	if (!glstatus) {
-		char log[1024] = {0};
-		GLsizei len;
-		glGetShaderInfoLog(frag_shader, 1024, &len, log);
-		fprintf(stderr, "Failed to compile fragment shader: %.*s\n",
-				len, log);
-		return EXIT_FAILURE;
-	}
-
 	GLuint vertex_shader = glCreateShader(GL_VERTEX_SHADER);
 	const char *vtext = vertex_shader_text;
 
@@ -698,38 +869,24 @@ int main(int argc, char **argv)
 		return EXIT_FAILURE;
 	}
 
-	state.shader_prog = glCreateProgram();
-	glAttachShader(state.shader_prog, frag_shader);
-	glAttachShader(state.shader_prog, vertex_shader);
-	state.attr_pos = 0;
-	glBindAttribLocation(state.shader_prog, state.attr_pos, "pos");
-	glLinkProgram(state.shader_prog);
-	glGetProgramiv(state.shader_prog, GL_LINK_STATUS, &glstatus);
-	if (!glstatus) {
-		char log[1024] = {0};
-		GLsizei len;
-		glGetProgramInfoLog(state.shader_prog, 1000, &len, log);
-		fprintf(stderr, "Failed to link shader:\n%.*s\n", len, log);
-		exit(1);
-	}
+	create_shader(frag_shader, vertex_shader, &state.main_shader);
+	if (texture_shader_A) create_shader(texture_shader_A, vertex_shader, &state.texture_shaders.A);
 
 	glDeleteShader(frag_shader);
 	glDeleteShader(vertex_shader);
-
-	state.unif_iResolution =
-			glGetUniformLocation(state.shader_prog, "iResolution");
-	state.unif_iTime = glGetUniformLocation(state.shader_prog, "iTime");
-	state.unif_iTimeDelta =
-			glGetUniformLocation(state.shader_prog, "iTimeDelta");
-	state.unif_iFrame = glGetUniformLocation(state.shader_prog, "iFrame");
-	state.unif_iMouse = glGetUniformLocation(state.shader_prog, "iMouse");
+	if (texture_shader_A) glDeleteShader(texture_shader_A);
 
 	glGenVertexArrays(1, &state.vertex_array);
 	glBindVertexArray(state.vertex_array);
 
-	glVertexAttribPointer(
-			state.attr_pos, 2, GL_FLOAT, GL_FALSE, 0, (void *)0);
 	glEnableVertexAttribArray(0);
+
+	struct output *output, *tmp;
+	wl_list_for_each_safe(output, tmp, &state.outputs, link)
+	{
+		glGenTextures(1, &output->textures.A);
+		create_framebuffer(output, output->textures.A, &output->framebuffers.A);
+	}
 
 	glGenBuffers(1, &state.vertex_buffer);
 	glBindBuffer(GL_ARRAY_BUFFER, state.vertex_buffer);
