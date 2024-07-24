@@ -35,7 +35,7 @@
 #include <wayland-egl.h>
 
 static char usage[] = {
-		"shaderbg [-h|--fps F|--layer l|--speed S|--shaderA A] output-name shader.frag\n"
+		"shaderbg [-h|--fps F|--layer l|--speed S|--shaderA A|--shaderB B] output-name shader.frag\n"
 		"The provided fragment shaders should follow the Shadertoy API\n"};
 
 static const struct option options[] = {{"help", no_argument, NULL, 'h'},
@@ -43,6 +43,7 @@ static const struct option options[] = {{"help", no_argument, NULL, 'h'},
 		{"fps", required_argument, NULL, 'f'},
 		{"layer", required_argument, NULL, 'l'},
 		{"shaderA", required_argument, NULL, 'A'},
+		{"shaderB", required_argument, NULL, 'B'},
 		{0, 0, NULL, 0}};
 
 PFNGLCREATESHADERPROC glCreateShader;
@@ -67,7 +68,8 @@ PFNGLBUFFERDATAPROC glBufferData;
 PFNGLGENFRAMEBUFFERSPROC glGenFramebuffers;
 PFNGLBINDFRAMEBUFFERPROC glBindFramebuffer;
 PFNGLFRAMEBUFFERTEXTURE2DPROC glFramebufferTexture2D;
-PFNGLCHECKFRAMEBUFFERSTATUSEXTPROC glCheckFramebufferStatus;
+PFNGLCHECKFRAMEBUFFERSTATUSPROC glCheckFramebufferStatus;
+PFNGLCLEARBUFFERUIVPROC glClearBufferuiv;
 PFNGLDELETEFRAMEBUFFERSPROC glDeleteFramebuffers;
 PFNGLUNIFORM1FPROC glUniform1f;
 PFNGLUNIFORM2FPROC glUniform2f;
@@ -102,7 +104,8 @@ void load_gl_funcs()
 	load_gl_func(PFNGLGENFRAMEBUFFERSPROC, glGenFramebuffers);
 	load_gl_func(PFNGLBINDFRAMEBUFFERPROC, glBindFramebuffer);
 	load_gl_func(PFNGLFRAMEBUFFERTEXTURE2DPROC, glFramebufferTexture2D);
-	load_gl_func(PFNGLCHECKFRAMEBUFFERSTATUSEXTPROC, glCheckFramebufferStatus);
+	load_gl_func(PFNGLCHECKFRAMEBUFFERSTATUSPROC, glCheckFramebufferStatus);
+	load_gl_func(PFNGLCLEARBUFFERUIVPROC, glClearBufferuiv);
 	load_gl_func(PFNGLDELETEFRAMEBUFFERSPROC, glDeleteFramebuffers);
 	load_gl_func(PFNGLUNIFORM1FPROC, glUniform1f);
 	load_gl_func(PFNGLUNIFORM2FPROC, glUniform2f);
@@ -124,7 +127,8 @@ struct shader {
 	GLuint unif_iFrame;
 	GLuint unif_iMouse;
 	struct {
-		GLint A;
+		GLint unif_A;
+		GLint unif_B;
 	} buffers;
 };
 
@@ -136,6 +140,7 @@ struct state {
 	char *shader_path;
 	struct {
 		char *A;
+		char *B;
 	} texture_shader_paths;
 
 	struct wl_display *display;
@@ -153,6 +158,7 @@ struct state {
 	struct shader main_shader;
 	struct {
 		struct shader A;
+		struct shader B;
 	} texture_shaders;
 
 	GLuint vertex_buffer;
@@ -185,9 +191,11 @@ struct output {
 
 	struct {
 		GLuint A;
+		GLuint B;
 	} textures;
 	struct {
 		GLuint A;
+		GLuint B;
 	} framebuffers;
 };
 
@@ -270,20 +278,13 @@ static void draw_frame(struct output *output) {
 
 	glActiveTexture(GL_TEXTURE0);
 	glBindTexture(GL_TEXTURE_2D, output->textures.A);
-	GLuint iBufferALocation = shader.buffers.A;
-
-	if (!check_gl_errors("before uniform")) {
-		exit(EXIT_FAILURE);
-	}
-	fprintf(stderr, "Hi %x, %x, %x\n", shader.buffers.A, shader.unif_iTime, shader.unif_iResolution);
+	GLuint iBufferALocation = shader.buffers.unif_A;
 	glUniform1i(iBufferALocation, 0);
 
-	if (!check_gl_errors("uniform")) {
-		exit(EXIT_FAILURE);
-	}
-	glBindTexture(GL_TEXTURE_2D, 0);
-
-
+	glActiveTexture(GL_TEXTURE1);
+	glBindTexture(GL_TEXTURE_2D, output->textures.B);
+	GLuint iBufferBLocation = shader.buffers.unif_B;
+	glUniform1i(iBufferBLocation, 1);
 
 	glUniform1f(shader.unif_iTime, state->current_time);
 	glUniform1f(shader.unif_iTimeDelta, state->delta_time);
@@ -336,12 +337,48 @@ static void redraw_texture(struct output *output, GLuint framebuffer, struct sha
 
 static void redraw_textures(struct output *output) {
 	if(output->state->texture_shaders.A.shader_prog) redraw_texture(output, output->framebuffers.A, &output->state->texture_shaders.A);
+	if(output->state->texture_shaders.B.shader_prog) redraw_texture(output, output->framebuffers.B, &output->state->texture_shaders.B);
 }
 
 static void redraw(struct output *output)
 {
 	redraw_textures(output);
 	draw_frame(output);
+}
+
+static void create_framebuffer(struct output *output, GLuint texture, GLuint *framebuffer) {
+	glGenFramebuffers(1, framebuffer);
+	glBindFramebuffer(GL_FRAMEBUFFER, *framebuffer);
+
+	glBindTexture(GL_TEXTURE_2D, texture);
+
+    GLenum err = glGetError();
+    if (err != GL_NO_ERROR) {
+        fprintf(stderr, "Error creating texture: %x\n", err);
+        exit(EXIT_FAILURE);
+    }
+
+
+	glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, output->width, output->height, 0, GL_RGB, GL_UNSIGNED_BYTE, NULL);
+
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+
+	glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, texture, 0);
+
+	GLuint color[4] = {255, 1, 0, 0};
+	glClearBufferuiv(GL_COLOR, 0, color);
+
+	if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE) {
+		fprintf(stderr, "Framebuffer not complete (%x) but %x one of (%x)", GL_FRAMEBUFFER_COMPLETE, glCheckFramebufferStatus(GL_FRAMEBUFFER),
+		  GL_FRAMEBUFFER_INCOMPLETE_ATTACHMENT);
+		exit(EXIT_FAILURE);
+	}
+
+	
+
+	glBindFramebuffer(GL_FRAMEBUFFER, 0);
+	glBindTexture(GL_TEXTURE_2D, 0);
 }
 
 static void layer_surface_configure(void *data,
@@ -356,6 +393,11 @@ static void layer_surface_configure(void *data,
 	if (height > 0) {
 		output->height = height;
 	}
+
+	glGenTextures(1, &output->textures.A);
+	glGenTextures(1, &output->textures.B);
+	create_framebuffer(output, output->textures.A, &output->framebuffers.A);
+	create_framebuffer(output, output->textures.B, &output->framebuffers.B);
 
 	if (!output->egl_window) {
 		zwlr_layer_surface_v1_ack_configure(
@@ -646,28 +688,10 @@ static void create_shader(GLuint frag_shader, GLuint vertex_shader, struct shade
 			glGetUniformLocation(shader->shader_prog, "iTimeDelta");
 	shader->unif_iFrame = glGetUniformLocation(shader->shader_prog, "iFrame");
 	shader->unif_iMouse = glGetUniformLocation(shader->shader_prog, "iMouse");
-	shader->buffers.A = glGetUniformLocation(shader->shader_prog, "iBufferA");
+	shader->buffers.unif_A = glGetUniformLocation(shader->shader_prog, "iBufferA");
+	shader->buffers.unif_B = glGetUniformLocation(shader->shader_prog, "iBufferB");
 	glVertexAttribPointer(
 			shader->attr_pos, 2, GL_FLOAT, GL_FALSE, 0, (void *)0);
-}
-
-static void create_framebuffer(struct output *output, GLuint texture, GLuint *framebuffer) {
-	glGenFramebuffers(1, framebuffer);
-	glBindFramebuffer(GL_FRAMEBUFFER, *framebuffer);
-
-	glBindTexture(GL_TEXTURE_2D, texture);
-
-	glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, output->width, output->height, 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
-
-	glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, texture, 0);
-
-	if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE) {
-		fprintf(stderr, "Framebuffer not complete");
-		exit(EXIT_FAILURE);
-	}
-
-	glBindFramebuffer(GL_FRAMEBUFFER, 0);
-	glBindTexture(GL_TEXTURE_2D, 0);
 }
 
 int main(int argc, char **argv)
@@ -679,7 +703,7 @@ int main(int argc, char **argv)
 	wl_list_init(&state.outputs);
 
 	while (true) {
-		int opt = getopt_long(argc, argv, "hf:l:A:", options, NULL);
+		int opt = getopt_long(argc, argv, "hf:l:A:B:", options, NULL);
 		if (opt == -1) {
 			break;
 		}
@@ -725,6 +749,9 @@ int main(int argc, char **argv)
 
 		case 'A': {
 			state.texture_shader_paths.A = optarg;
+			} break;
+		case 'B': {
+			state.texture_shader_paths.B = optarg;
 			} break;
 
 		default:
@@ -850,7 +877,8 @@ int main(int argc, char **argv)
 	}
 
 	GLuint texture_shader_A = create_frag_shader(state.texture_shader_paths.A, 0,0,0,0);
-	GLuint frag_shader = create_frag_shader(state.shader_path, !!texture_shader_A, 0,0,0);
+	GLuint texture_shader_B = create_frag_shader(state.texture_shader_paths.B, 0,0,0,0);
+	GLuint frag_shader = create_frag_shader(state.shader_path, !!texture_shader_A, !!texture_shader_B ,0,0);
 
 	GLint glstatus;
 	GLuint vertex_shader = glCreateShader(GL_VERTEX_SHADER);
@@ -871,22 +899,17 @@ int main(int argc, char **argv)
 
 	create_shader(frag_shader, vertex_shader, &state.main_shader);
 	if (texture_shader_A) create_shader(texture_shader_A, vertex_shader, &state.texture_shaders.A);
+	if (texture_shader_B) create_shader(texture_shader_B, vertex_shader, &state.texture_shaders.B);
 
 	glDeleteShader(frag_shader);
 	glDeleteShader(vertex_shader);
 	if (texture_shader_A) glDeleteShader(texture_shader_A);
+	if (texture_shader_B) glDeleteShader(texture_shader_B);
 
 	glGenVertexArrays(1, &state.vertex_array);
 	glBindVertexArray(state.vertex_array);
 
 	glEnableVertexAttribArray(0);
-
-	struct output *output, *tmp;
-	wl_list_for_each_safe(output, tmp, &state.outputs, link)
-	{
-		glGenTextures(1, &output->textures.A);
-		create_framebuffer(output, output->textures.A, &output->framebuffers.A);
-	}
 
 	glGenBuffers(1, &state.vertex_buffer);
 	glBindBuffer(GL_ARRAY_BUFFER, state.vertex_buffer);
