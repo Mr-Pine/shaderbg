@@ -199,12 +199,14 @@ struct output {
 	bool needs_resize;
 	uint32_t last_serial;
 
+	GLuint textures[5];
 	struct {
-		GLuint A;
-		GLuint B;
-		GLuint C;
-		GLuint D;
-	} textures;
+		uint A;
+		uint B;
+		uint C;
+		uint D;
+	} framebuffer_textures;
+	uint free_texture;
 	struct {
 		GLuint A;
 		GLuint B;
@@ -290,19 +292,19 @@ static void draw(struct shader *shader, struct output *output, bool clear) {
 			shader->attr_pos, 2, GL_FLOAT, GL_FALSE, 0, (void *)0);
 
 	glActiveTexture(GL_TEXTURE0);
-	glBindTexture(GL_TEXTURE_2D, output->textures.A);
+	glBindTexture(GL_TEXTURE_2D, output->textures[output->framebuffer_textures.A]);
 	GLuint iBufferALocation = shader->buffers.unif_A;
 	glUniform1i(iBufferALocation, 0);
 	glActiveTexture(GL_TEXTURE1);
-	glBindTexture(GL_TEXTURE_2D, output->textures.B);
+	glBindTexture(GL_TEXTURE_2D, output->textures[output->framebuffer_textures.B]);
 	GLuint iBufferBLocation = shader->buffers.unif_B;
 	glUniform1i(iBufferBLocation, 1);
 	glActiveTexture(GL_TEXTURE2);
-	glBindTexture(GL_TEXTURE_2D, output->textures.C);
+	glBindTexture(GL_TEXTURE_2D, output->textures[output->framebuffer_textures.C]);
 	GLuint iBufferCLocation = shader->buffers.unif_C;
 	glUniform1i(iBufferCLocation, 2);
 	glActiveTexture(GL_TEXTURE3);
-	glBindTexture(GL_TEXTURE_2D, output->textures.D);
+	glBindTexture(GL_TEXTURE_2D, output->textures[output->framebuffer_textures.D]);
 	GLuint iBufferDLocation = shader->buffers.unif_D;
 	glUniform1i(iBufferDLocation, 3);
 
@@ -328,28 +330,8 @@ static void draw_frame(struct output *output) {
 	draw(&output->state->main_shader, output, true);
 }
 
-static void redraw_texture(struct output *output, GLuint framebuffer, struct shader *shader) {
+static void bind_framebuffer_texture(struct output *output, GLuint texture, GLuint framebuffer) {
 	glBindFramebuffer(GL_FRAMEBUFFER, framebuffer);
-	draw(shader, output, false);
-	glBindFramebuffer(GL_FRAMEBUFFER, 0);
-}
-
-static void redraw_textures(struct output *output) {
-	if(output->state->texture_shaders.A.shader_prog) redraw_texture(output, output->framebuffers.A, &output->state->texture_shaders.A);
-	if(output->state->texture_shaders.B.shader_prog) redraw_texture(output, output->framebuffers.B, &output->state->texture_shaders.B);
-	if(output->state->texture_shaders.C.shader_prog) redraw_texture(output, output->framebuffers.C, &output->state->texture_shaders.C);
-	if(output->state->texture_shaders.D.shader_prog) redraw_texture(output, output->framebuffers.D, &output->state->texture_shaders.D);
-}
-
-static void redraw(struct output *output)
-{
-	redraw_textures(output);
-	draw_frame(output);
-}
-
-static void create_framebuffer(struct output *output, GLuint texture, GLuint *framebuffer) {
-	glGenFramebuffers(1, framebuffer);
-	glBindFramebuffer(GL_FRAMEBUFFER, *framebuffer);
 
 	glBindTexture(GL_TEXTURE_2D, texture);
 
@@ -373,10 +355,34 @@ static void create_framebuffer(struct output *output, GLuint texture, GLuint *fr
 		exit(EXIT_FAILURE);
 	}
 
+	//glBindFramebuffer(GL_FRAMEBUFFER, 0);
+	glBindTexture(GL_TEXTURE_2D, 0);
+}
+
+static void redraw_texture(struct output *output, GLuint framebuffer, uint *framebuffer_texture, struct shader *shader) {
+	bind_framebuffer_texture(output, output->textures[output->free_texture], framebuffer);
+
+	draw(shader, output, false);
+
+	uint tmp = output->free_texture;
+	output->free_texture = *framebuffer_texture;
+	*framebuffer_texture = tmp;
 	
 
 	glBindFramebuffer(GL_FRAMEBUFFER, 0);
-	glBindTexture(GL_TEXTURE_2D, 0);
+}
+
+static void redraw_textures(struct output *output) {
+	if(output->state->texture_shaders.A.shader_prog) redraw_texture(output, output->framebuffers.A, &output->framebuffer_textures.A, &output->state->texture_shaders.A);
+	if(output->state->texture_shaders.B.shader_prog) redraw_texture(output, output->framebuffers.B, &output->framebuffer_textures.B, &output->state->texture_shaders.B);
+	if(output->state->texture_shaders.C.shader_prog) redraw_texture(output, output->framebuffers.C, &output->framebuffer_textures.C, &output->state->texture_shaders.C);
+	if(output->state->texture_shaders.D.shader_prog) redraw_texture(output, output->framebuffers.D, &output->framebuffer_textures.D, &output->state->texture_shaders.D);
+}
+
+static void redraw(struct output *output)
+{
+	redraw_textures(output);
+	draw_frame(output);
 }
 
 static void layer_surface_configure(void *data,
@@ -392,14 +398,13 @@ static void layer_surface_configure(void *data,
 		output->height = height;
 	}
 
-	glGenTextures(1, &output->textures.A);
-	glGenTextures(1, &output->textures.B);
-	glGenTextures(1, &output->textures.C);
-	glGenTextures(1, &output->textures.D);
-	create_framebuffer(output, output->textures.A, &output->framebuffers.A);
-	create_framebuffer(output, output->textures.B, &output->framebuffers.B);
-	create_framebuffer(output, output->textures.C, &output->framebuffers.C);
-	create_framebuffer(output, output->textures.D, &output->framebuffers.D);
+	glGenTextures(sizeof(output->textures) / sizeof(output->textures[0]), output->textures);
+	glGenFramebuffers(4, (GLuint *) &output->framebuffers);
+	output->framebuffer_textures.A = 0;
+	output->framebuffer_textures.B = 1;
+	output->framebuffer_textures.C = 2;
+	output->framebuffer_textures.D = 3;
+	output->free_texture = 4;
 
 	if (!output->egl_window) {
 		zwlr_layer_surface_v1_ack_configure(
