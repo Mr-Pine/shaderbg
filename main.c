@@ -35,7 +35,7 @@
 #include <wayland-egl.h>
 
 static char usage[] = {
-		"shaderbg [-h|--fps F|--layer l|--speed S|--shaderA A|--shaderB B] output-name shader.frag\n"
+		"shaderbg [-h|--fps F|--layer l|--speed S|--shaderA A|--shaderB B|--shaderC C|--shaderD D] output-name shader.frag\n"
 		"The provided fragment shaders should follow the Shadertoy API\n"};
 
 static const struct option options[] = {{"help", no_argument, NULL, 'h'},
@@ -44,6 +44,8 @@ static const struct option options[] = {{"help", no_argument, NULL, 'h'},
 		{"layer", required_argument, NULL, 'l'},
 		{"shaderA", required_argument, NULL, 'A'},
 		{"shaderB", required_argument, NULL, 'B'},
+		{"shaderC", required_argument, NULL, 'C'},
+		{"shaderD", required_argument, NULL, 'D'},
 		{0, 0, NULL, 0}};
 
 PFNGLCREATESHADERPROC glCreateShader;
@@ -129,6 +131,8 @@ struct shader {
 	struct {
 		GLint unif_A;
 		GLint unif_B;
+		GLint unif_C;
+		GLint unif_D;
 	} buffers;
 };
 
@@ -141,6 +145,8 @@ struct state {
 	struct {
 		char *A;
 		char *B;
+		char *C;
+		char *D;
 	} texture_shader_paths;
 
 	struct wl_display *display;
@@ -159,6 +165,8 @@ struct state {
 	struct {
 		struct shader A;
 		struct shader B;
+		struct shader C;
+		struct shader D;
 	} texture_shaders;
 
 	GLuint vertex_buffer;
@@ -192,10 +200,14 @@ struct output {
 	struct {
 		GLuint A;
 		GLuint B;
+		GLuint C;
+		GLuint D;
 	} textures;
 	struct {
 		GLuint A;
 		GLuint B;
+		GLuint C;
+		GLuint D;
 	} framebuffers;
 };
 
@@ -255,7 +267,7 @@ static struct wl_callback_listener frame_callback_listener = {
 		.done = frame_done,
 };
 
-static void draw_frame(struct output *output) {
+static void draw(struct shader *shader, struct output *output) {
 	struct state *state = output->state;
 	if (!eglMakeCurrent(state->egl_display, output->egl_surface,
 			    output->egl_surface, state->egl_context)) {
@@ -265,51 +277,6 @@ static void draw_frame(struct output *output) {
 
 	glViewport(0, 0, output->width, output->height);
 
-	glClear(GL_COLOR_BUFFER_BIT);
-
-	glBindVertexArray(state->vertex_array);
-	glBindBuffer(GL_ARRAY_BUFFER, state->vertex_buffer);
-	struct shader shader = state->main_shader;
-	glUseProgram(shader.shader_prog);
-
-	// todo: why do we need to call this here?
-	glVertexAttribPointer(
-			shader.attr_pos, 2, GL_FLOAT, GL_FALSE, 0, (void *)0);
-
-	glActiveTexture(GL_TEXTURE0);
-	glBindTexture(GL_TEXTURE_2D, output->textures.A);
-	GLuint iBufferALocation = shader.buffers.unif_A;
-	glUniform1i(iBufferALocation, 0);
-	glActiveTexture(GL_TEXTURE1);
-	glBindTexture(GL_TEXTURE_2D, output->textures.B);
-	GLuint iBufferBLocation = shader.buffers.unif_B;
-	glUniform1i(iBufferBLocation, 1);
-
-	glUniform1f(shader.unif_iTime, state->current_time);
-	glUniform1f(shader.unif_iTimeDelta, state->delta_time);
-	GLfloat w = output->width, h = output->height;
-	glUniform3f(shader.unif_iResolution, w, h, 0.);
-	glUniform1i(shader.unif_iFrame, state->frame_no);
-	glUniform4f(shader.unif_iMouse, 0., 0., 0., 0.);
-
-	glDrawArrays(GL_TRIANGLE_FAN, 0, 3);
-
-	if (!check_gl_errors("drawing")) {
-		exit(EXIT_FAILURE);
-	}
-}
-
-static void redraw_texture(struct output *output, GLuint framebuffer, struct shader *shader) {
-	struct state *state = output->state;
-	if (!eglMakeCurrent(state->egl_display, output->egl_surface,
-			    output->egl_surface, state->egl_context)) {
-		fprintf(stderr, "Failed to make current\n");
-		exit(EXIT_FAILURE);
-	}
-
-	glViewport(0, 0, output->width, output->height);
-
-	glBindFramebuffer(GL_FRAMEBUFFER, framebuffer);
 	glClear(GL_COLOR_BUFFER_BIT);
 
 	glBindVertexArray(state->vertex_array);
@@ -328,6 +295,14 @@ static void redraw_texture(struct output *output, GLuint framebuffer, struct sha
 	glBindTexture(GL_TEXTURE_2D, output->textures.B);
 	GLuint iBufferBLocation = shader->buffers.unif_B;
 	glUniform1i(iBufferBLocation, 1);
+	glActiveTexture(GL_TEXTURE2);
+	glBindTexture(GL_TEXTURE_2D, output->textures.C);
+	GLuint iBufferCLocation = shader->buffers.unif_C;
+	glUniform1i(iBufferCLocation, 2);
+	glActiveTexture(GL_TEXTURE3);
+	glBindTexture(GL_TEXTURE_2D, output->textures.D);
+	GLuint iBufferDLocation = shader->buffers.unif_D;
+	glUniform1i(iBufferDLocation, 3);
 
 	glUniform1f(shader->unif_iTime, state->current_time);
 	glUniform1f(shader->unif_iTimeDelta, state->delta_time);
@@ -338,16 +313,26 @@ static void redraw_texture(struct output *output, GLuint framebuffer, struct sha
 
 	glDrawArrays(GL_TRIANGLE_FAN, 0, 3);
 
-	glBindFramebuffer(GL_FRAMEBUFFER, 0);
-
-	if (!check_gl_errors("drawing to texture")) {
+	if (!check_gl_errors("drawing")) {
 		exit(EXIT_FAILURE);
 	}
+}
+
+static void draw_frame(struct output *output) {
+	draw(&output->state->main_shader, output);
+}
+
+static void redraw_texture(struct output *output, GLuint framebuffer, struct shader *shader) {
+	glBindFramebuffer(GL_FRAMEBUFFER, framebuffer);
+	draw(shader, output);
+	glBindFramebuffer(GL_FRAMEBUFFER, 0);
 }
 
 static void redraw_textures(struct output *output) {
 	if(output->state->texture_shaders.A.shader_prog) redraw_texture(output, output->framebuffers.A, &output->state->texture_shaders.A);
 	if(output->state->texture_shaders.B.shader_prog) redraw_texture(output, output->framebuffers.B, &output->state->texture_shaders.B);
+	if(output->state->texture_shaders.C.shader_prog) redraw_texture(output, output->framebuffers.C, &output->state->texture_shaders.C);
+	if(output->state->texture_shaders.D.shader_prog) redraw_texture(output, output->framebuffers.D, &output->state->texture_shaders.D);
 }
 
 static void redraw(struct output *output)
@@ -403,8 +388,12 @@ static void layer_surface_configure(void *data,
 
 	glGenTextures(1, &output->textures.A);
 	glGenTextures(1, &output->textures.B);
+	glGenTextures(1, &output->textures.C);
+	glGenTextures(1, &output->textures.D);
 	create_framebuffer(output, output->textures.A, &output->framebuffers.A);
 	create_framebuffer(output, output->textures.B, &output->framebuffers.B);
+	create_framebuffer(output, output->textures.C, &output->framebuffers.C);
+	create_framebuffer(output, output->textures.D, &output->framebuffers.D);
 
 	if (!output->egl_window) {
 		zwlr_layer_surface_v1_ack_configure(
@@ -595,25 +584,25 @@ static const char vertex_shader_text[] =
 		"  gl_Position = vec4(pos.x, pos.y, 0, 1);\n"
 		"}\n";
 
-static const char frag_prologue_version[] = "#version 330\n";
-static const char frag_prologue_buffer_A[] = "uniform sampler2D iBufferA; ";
-static const char frag_prologue_buffer_B[] = "uniform sampler2D iBufferB; ";
-static const char frag_prologue_buffer_C[] = "uniform sampler2D iBufferC; ";
-static const char frag_prologue_buffer_D[] = "uniform sampler2D iBufferD; ";
 /* Only one newline -- these can mess up the line count in the composed shader
 and make debugging harder */
-static const char frag_prologue[] = "uniform vec3 iResolution; "
-				    "uniform float iTime; "
-				    "uniform float iTimeDelta; "
-				    "uniform float iFrame; "
-				    "uniform vec4 iMouse;\n";
+static const char frag_prologue[] = "#version 330\n"
+					"uniform sampler2D iBufferA; "
+					"uniform sampler2D iBufferB; "
+					"uniform sampler2D iBufferC; "
+					"uniform sampler2D iBufferD; "
+					"uniform vec3 iResolution; "
+					"uniform float iTime; "
+					"uniform float iTimeDelta; "
+					"uniform float iFrame; "
+					"uniform vec4 iMouse;\n";
 
 static const char frag_coda[] =
 		"void main() {\n"
 		"    mainImage(gl_FragColor, gl_FragCoord.xy);\n"
 		"}\n";
 
-static GLuint create_frag_shader(char *path, int A, int B, int C, int D) {
+static GLuint create_frag_shader(char *path) {
 	if (!path) return 0;
 	FILE *frag_file = fopen(path, "rb");
 	if (!frag_file) {
@@ -635,21 +624,11 @@ static GLuint create_frag_shader(char *path, int A, int B, int C, int D) {
 
 	GLuint frag_shader = glCreateShader(GL_FRAGMENT_SHADER);
 	const char *frag_parts[] = {
-			frag_prologue_version,
-			A ? frag_prologue_buffer_A : "",
-			B ? frag_prologue_buffer_B : "",
-			C ? frag_prologue_buffer_C : "",
-			D ? frag_prologue_buffer_D : "",
 			frag_prologue,
 			frag_text,
 			frag_coda,
 	};
 	int frag_lengths[] = {
-			sizeof(frag_prologue_version) - 1,
-			(sizeof(frag_prologue_buffer_A) - 1) * A,
-			(sizeof(frag_prologue_buffer_B) - 1) * B,
-			(sizeof(frag_prologue_buffer_C) - 1) * C,
-			(sizeof(frag_prologue_buffer_D) - 1) * D,
 			sizeof(frag_prologue) - 1,
 			frag_len,
 			sizeof(frag_coda) - 1,
@@ -697,6 +676,8 @@ static void create_shader(GLuint frag_shader, GLuint vertex_shader, struct shade
 	shader->unif_iMouse = glGetUniformLocation(shader->shader_prog, "iMouse");
 	shader->buffers.unif_A = glGetUniformLocation(shader->shader_prog, "iBufferA");
 	shader->buffers.unif_B = glGetUniformLocation(shader->shader_prog, "iBufferB");
+	shader->buffers.unif_C = glGetUniformLocation(shader->shader_prog, "iBufferC");
+	shader->buffers.unif_D = glGetUniformLocation(shader->shader_prog, "iBufferD");
 	glVertexAttribPointer(
 			shader->attr_pos, 2, GL_FLOAT, GL_FALSE, 0, (void *)0);
 }
@@ -710,7 +691,7 @@ int main(int argc, char **argv)
 	wl_list_init(&state.outputs);
 
 	while (true) {
-		int opt = getopt_long(argc, argv, "hf:l:A:B:", options, NULL);
+		int opt = getopt_long(argc, argv, "hf:l:A:B:C:D:", options, NULL);
 		if (opt == -1) {
 			break;
 		}
@@ -759,6 +740,12 @@ int main(int argc, char **argv)
 			} break;
 		case 'B': {
 			state.texture_shader_paths.B = optarg;
+			} break;
+		case 'C': {
+			state.texture_shader_paths.C = optarg;
+			} break;
+		case 'D': {
+			state.texture_shader_paths.D = optarg;
 			} break;
 
 		default:
@@ -883,9 +870,11 @@ int main(int argc, char **argv)
 		return EXIT_FAILURE;
 	}
 
-	GLuint texture_shader_A = create_frag_shader(state.texture_shader_paths.A, 1, 1, 0, 0);
-	GLuint texture_shader_B = create_frag_shader(state.texture_shader_paths.B, 1, 1, 0, 0);
-	GLuint frag_shader = create_frag_shader(state.shader_path, 1, 1, 0, 0);
+	GLuint texture_shader_A = create_frag_shader(state.texture_shader_paths.A);
+	GLuint texture_shader_B = create_frag_shader(state.texture_shader_paths.B);
+	GLuint texture_shader_C = create_frag_shader(state.texture_shader_paths.C);
+	GLuint texture_shader_D = create_frag_shader(state.texture_shader_paths.D);
+	GLuint frag_shader = create_frag_shader(state.shader_path);
 
 	GLint glstatus;
 	GLuint vertex_shader = glCreateShader(GL_VERTEX_SHADER);
@@ -907,11 +896,15 @@ int main(int argc, char **argv)
 	create_shader(frag_shader, vertex_shader, &state.main_shader);
 	if (texture_shader_A) create_shader(texture_shader_A, vertex_shader, &state.texture_shaders.A);
 	if (texture_shader_B) create_shader(texture_shader_B, vertex_shader, &state.texture_shaders.B);
+	if (texture_shader_C) create_shader(texture_shader_C, vertex_shader, &state.texture_shaders.C);
+	if (texture_shader_D) create_shader(texture_shader_D, vertex_shader, &state.texture_shaders.D);
 
 	glDeleteShader(frag_shader);
 	glDeleteShader(vertex_shader);
 	if (texture_shader_A) glDeleteShader(texture_shader_A);
 	if (texture_shader_B) glDeleteShader(texture_shader_B);
+	if (texture_shader_C) glDeleteShader(texture_shader_C);
+	if (texture_shader_D) glDeleteShader(texture_shader_D);
 
 	glGenVertexArrays(1, &state.vertex_array);
 	glBindVertexArray(state.vertex_array);
