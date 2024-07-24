@@ -11,3 +11,5 @@ void mainImage( out vec4 fragColor, in vec2 fragCoord )
 
 	fragColor = vec4(r, g, b, 1.);
 }
+
+// vi: ft=glsl
