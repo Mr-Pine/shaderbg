@@ -597,7 +597,7 @@ static const char vertex_shader_text[] =
 
 /* Only one newline -- these can mess up the line count in the composed shader
 and make debugging harder */
-static const char frag_prologue[] = "#version 330\n"
+static const char frag_prologue[] = "#version 450\n"
 					"uniform sampler2D iBufferA; "
 					"uniform sampler2D iBufferB; "
 					"uniform sampler2D iBufferC; "
@@ -609,8 +609,8 @@ static const char frag_prologue[] = "#version 330\n"
 					"uniform vec4 iMouse;\n";
 
 static const char frag_coda[] =
-		"void main() {\n"
-		"    mainImage(gl_FragColor, gl_FragCoord.xy);\n"
+		"out vec4 fragColor; void main() {\n"
+		"    mainImage(fragColor, gl_FragCoord.xy);\n"
 		"}\n";
 
 static GLuint create_frag_shader(char *path, char *common) {
