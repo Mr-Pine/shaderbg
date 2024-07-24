@@ -280,7 +280,6 @@ static void draw_frame(struct output *output) {
 	glBindTexture(GL_TEXTURE_2D, output->textures.A);
 	GLuint iBufferALocation = shader.buffers.unif_A;
 	glUniform1i(iBufferALocation, 0);
-
 	glActiveTexture(GL_TEXTURE1);
 	glBindTexture(GL_TEXTURE_2D, output->textures.B);
 	GLuint iBufferBLocation = shader.buffers.unif_B;
@@ -308,16 +307,27 @@ static void redraw_texture(struct output *output, GLuint framebuffer, struct sha
 		exit(EXIT_FAILURE);
 	}
 
-	glBindFramebuffer(GL_FRAMEBUFFER, framebuffer);
-
 	glViewport(0, 0, output->width, output->height);
-	glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
+	glBindFramebuffer(GL_FRAMEBUFFER, framebuffer);
+	glClear(GL_COLOR_BUFFER_BIT);
+
+	glBindVertexArray(state->vertex_array);
+	glBindBuffer(GL_ARRAY_BUFFER, state->vertex_buffer);
 	glUseProgram(shader->shader_prog);
 
 	// todo: why do we need to call this here?
 	glVertexAttribPointer(
 			shader->attr_pos, 2, GL_FLOAT, GL_FALSE, 0, (void *)0);
+
+	glActiveTexture(GL_TEXTURE0);
+	glBindTexture(GL_TEXTURE_2D, output->textures.A);
+	GLuint iBufferALocation = shader->buffers.unif_A;
+	glUniform1i(iBufferALocation, 0);
+	glActiveTexture(GL_TEXTURE1);
+	glBindTexture(GL_TEXTURE_2D, output->textures.B);
+	GLuint iBufferBLocation = shader->buffers.unif_B;
+	glUniform1i(iBufferBLocation, 1);
 
 	glUniform1f(shader->unif_iTime, state->current_time);
 	glUniform1f(shader->unif_iTimeDelta, state->delta_time);
@@ -328,11 +338,11 @@ static void redraw_texture(struct output *output, GLuint framebuffer, struct sha
 
 	glDrawArrays(GL_TRIANGLE_FAN, 0, 3);
 
-    if (!check_gl_errors("drawing to texture")) {
-        exit(EXIT_FAILURE);
-    }
-
 	glBindFramebuffer(GL_FRAMEBUFFER, 0);
+
+	if (!check_gl_errors("drawing to texture")) {
+		exit(EXIT_FAILURE);
+	}
 }
 
 static void redraw_textures(struct output *output) {
@@ -365,9 +375,6 @@ static void create_framebuffer(struct output *output, GLuint texture, GLuint *fr
 	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
 
 	glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, texture, 0);
-
-	GLuint color[4] = {255, 1, 0, 0};
-	glClearBufferuiv(GL_COLOR, 0, color);
 
 	if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE) {
 		fprintf(stderr, "Framebuffer not complete (%x) but %x one of (%x)", GL_FRAMEBUFFER_COMPLETE, glCheckFramebufferStatus(GL_FRAMEBUFFER),
@@ -876,9 +883,9 @@ int main(int argc, char **argv)
 		return EXIT_FAILURE;
 	}
 
-	GLuint texture_shader_A = create_frag_shader(state.texture_shader_paths.A, 0,0,0,0);
-	GLuint texture_shader_B = create_frag_shader(state.texture_shader_paths.B, 0,0,0,0);
-	GLuint frag_shader = create_frag_shader(state.shader_path, !!texture_shader_A, !!texture_shader_B ,0,0);
+	GLuint texture_shader_A = create_frag_shader(state.texture_shader_paths.A, 1, 1, 0, 0);
+	GLuint texture_shader_B = create_frag_shader(state.texture_shader_paths.B, 1, 1, 0, 0);
+	GLuint frag_shader = create_frag_shader(state.shader_path, 1, 1, 0, 0);
 
 	GLint glstatus;
 	GLuint vertex_shader = glCreateShader(GL_VERTEX_SHADER);
