@@ -35,7 +35,7 @@
 #include <wayland-egl.h>
 
 static char usage[] = {
-		"shaderbg [-h|--fps F|--layer l|--speed S|--shaderA A|--shaderB B|--shaderC C|--shaderD D] output-name shader.frag\n"
+		"shaderbg [-h|--fps F|--layer l|--speed S|--shaderA A|--shaderB B|--shaderC C|--shaderD D|--common c] output-name shader.frag\n"
 		"The provided fragment shaders should follow the Shadertoy API\n"};
 
 static const struct option options[] = {{"help", no_argument, NULL, 'h'},
@@ -46,6 +46,7 @@ static const struct option options[] = {{"help", no_argument, NULL, 'h'},
 		{"shaderB", required_argument, NULL, 'B'},
 		{"shaderC", required_argument, NULL, 'C'},
 		{"shaderD", required_argument, NULL, 'D'},
+		{"common", required_argument, NULL, 'c'},
 		{0, 0, NULL, 0}};
 
 PFNGLCREATESHADERPROC glCreateShader;
@@ -148,6 +149,7 @@ struct state {
 		char *C;
 		char *D;
 	} texture_shader_paths;
+	char *common_path;
 
 	struct wl_display *display;
 	struct wl_registry *registry;
@@ -309,6 +311,10 @@ static void draw(struct shader *shader, struct output *output, bool clear) {
 	GLfloat w = output->width, h = output->height;
 	glUniform3f(shader->unif_iResolution, w, h, 0.);
 	glUniform1i(shader->unif_iFrame, state->frame_no);
+	if (!check_gl_errors("texture setup")) {
+		exit(EXIT_FAILURE);
+	}
+
 	glUniform4f(shader->unif_iMouse, 0., 0., 0., 0.);
 
 	glDrawArrays(GL_TRIANGLE_FAN, 0, 3);
@@ -594,7 +600,7 @@ static const char frag_prologue[] = "#version 330\n"
 					"uniform vec3 iResolution; "
 					"uniform float iTime; "
 					"uniform float iTimeDelta; "
-					"uniform float iFrame; "
+					"uniform int iFrame; "
 					"uniform vec4 iMouse;\n";
 
 static const char frag_coda[] =
@@ -602,7 +608,7 @@ static const char frag_coda[] =
 		"    mainImage(gl_FragColor, gl_FragCoord.xy);\n"
 		"}\n";
 
-static GLuint create_frag_shader(char *path) {
+static GLuint create_frag_shader(char *path, char *common) {
 	if (!path) return 0;
 	FILE *frag_file = fopen(path, "rb");
 	if (!frag_file) {
@@ -620,16 +626,39 @@ static GLuint create_frag_shader(char *path) {
 	fread(frag_text, (size_t)frag_len, 1, frag_file);
 	fclose(frag_file);
 
+
+	char *common_text = "";
+	GLint common_len = 0;
+	if (common) {
+		FILE *common_file = fopen(common, "rb");
+		if (!common_file) {
+			fprintf(stderr, "Failed to common file at '%s'\n", common);
+			return EXIT_FAILURE;
+		}
+		fseek(common_file, 0, SEEK_END);
+		common_len = (GLint)ftell(common_file);
+		fseek(common_file, 0, SEEK_SET);
+		common_text = (char *)malloc((size_t)common_len);
+		if (!common_text) {
+			fprintf(stderr, "Failed to allocate space to read common file\n");
+			return EXIT_FAILURE;
+		}
+		fread(common_text, (size_t)common_len, 1, common_file);
+		fclose(common_file);
+	}
+
 	GLint glstatus;
 
 	GLuint frag_shader = glCreateShader(GL_FRAGMENT_SHADER);
 	const char *frag_parts[] = {
 			frag_prologue,
+			common_text,
 			frag_text,
 			frag_coda,
 	};
 	int frag_lengths[] = {
 			sizeof(frag_prologue) - 1,
+			common_len,
 			frag_len,
 			sizeof(frag_coda) - 1,
 	};
@@ -691,7 +720,7 @@ int main(int argc, char **argv)
 	wl_list_init(&state.outputs);
 
 	while (true) {
-		int opt = getopt_long(argc, argv, "hf:l:A:B:C:D:", options, NULL);
+		int opt = getopt_long(argc, argv, "hf:l:A:B:C:D:c:", options, NULL);
 		if (opt == -1) {
 			break;
 		}
@@ -734,6 +763,10 @@ int main(int argc, char **argv)
 			}
 
 			break;
+
+		case 'c': {
+				state.common_path = optarg;
+			} break;
 
 		case 'A': {
 			state.texture_shader_paths.A = optarg;
@@ -870,11 +903,11 @@ int main(int argc, char **argv)
 		return EXIT_FAILURE;
 	}
 
-	GLuint texture_shader_A = create_frag_shader(state.texture_shader_paths.A);
-	GLuint texture_shader_B = create_frag_shader(state.texture_shader_paths.B);
-	GLuint texture_shader_C = create_frag_shader(state.texture_shader_paths.C);
-	GLuint texture_shader_D = create_frag_shader(state.texture_shader_paths.D);
-	GLuint frag_shader = create_frag_shader(state.shader_path);
+	GLuint texture_shader_A = create_frag_shader(state.texture_shader_paths.A, state.common_path);
+	GLuint texture_shader_B = create_frag_shader(state.texture_shader_paths.B, state.common_path);
+	GLuint texture_shader_C = create_frag_shader(state.texture_shader_paths.C, state.common_path);
+	GLuint texture_shader_D = create_frag_shader(state.texture_shader_paths.D, state.common_path);
+	GLuint frag_shader = create_frag_shader(state.shader_path, state.common_path);
 
 	GLint glstatus;
 	GLuint vertex_shader = glCreateShader(GL_VERTEX_SHADER);
