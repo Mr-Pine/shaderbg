@@ -267,7 +267,7 @@ static struct wl_callback_listener frame_callback_listener = {
 		.done = frame_done,
 };
 
-static void draw(struct shader *shader, struct output *output) {
+static void draw(struct shader *shader, struct output *output, bool clear) {
 	struct state *state = output->state;
 	if (!eglMakeCurrent(state->egl_display, output->egl_surface,
 			    output->egl_surface, state->egl_context)) {
@@ -277,7 +277,7 @@ static void draw(struct shader *shader, struct output *output) {
 
 	glViewport(0, 0, output->width, output->height);
 
-	glClear(GL_COLOR_BUFFER_BIT);
+	if (clear) glClear(GL_COLOR_BUFFER_BIT);
 
 	glBindVertexArray(state->vertex_array);
 	glBindBuffer(GL_ARRAY_BUFFER, state->vertex_buffer);
@@ -319,12 +319,12 @@ static void draw(struct shader *shader, struct output *output) {
 }
 
 static void draw_frame(struct output *output) {
-	draw(&output->state->main_shader, output);
+	draw(&output->state->main_shader, output, true);
 }
 
 static void redraw_texture(struct output *output, GLuint framebuffer, struct shader *shader) {
 	glBindFramebuffer(GL_FRAMEBUFFER, framebuffer);
-	draw(shader, output);
+	draw(shader, output, false);
 	glBindFramebuffer(GL_FRAMEBUFFER, 0);
 }
 
