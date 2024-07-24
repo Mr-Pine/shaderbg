@@ -360,7 +360,7 @@ static void create_framebuffer(struct output *output, GLuint texture, GLuint *fr
     }
 
 
-	glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, output->width, output->height, 0, GL_RGB, GL_UNSIGNED_BYTE, NULL);
+	glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA32F, output->width, output->height, 0, GL_RGBA, GL_FLOAT, NULL);
 
 	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
 	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
