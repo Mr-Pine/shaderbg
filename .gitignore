@@ -1,0 +1,2 @@
+# Prevents accidental commits of the binary when testing Nix Flake builds
+result
